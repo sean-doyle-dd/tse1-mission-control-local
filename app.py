@@ -18,8 +18,10 @@ app = Flask(__name__)
 
 # ---- DogStatsD - talks to the host Agent already set up in Lab 3, no new
 # dependency needed since the StatsD wire protocol is a one-line UDP packet.
+# Port 8135, not the default 8125 - this Mac's Agent config was remapped by
+# Enterprise IT's End User Device Monitoring setup (EITOE-4424).
 class DogStatsD:
-    def __init__(self, host="127.0.0.1", port=8125):
+    def __init__(self, host="127.0.0.1", port=8135):
         self.addr = (host, port)
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
