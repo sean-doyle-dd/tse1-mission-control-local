@@ -1,0 +1,223 @@
+{
+  "title": "Ticket Log (local) — Mission Control",
+  "description": "Custom DogStatsD metrics from the local SQLite-backed Ticket Log app: ticket volume, DB file size, and Zendesk-via-claude-CLI call health/latency.",
+  "layout_type": "ordered",
+  "notify_list": [],
+  "reflow_type": "fixed",
+  "widgets": [
+    {
+      "definition": {
+        "type": "group",
+        "title": "Overview",
+        "layout_type": "ordered",
+        "widgets": [
+          {
+            "definition": {
+              "type": "query_value",
+              "title": "Tickets Logged",
+              "autoscale": true,
+              "precision": 0,
+              "requests": [
+                {
+                  "response_format": "scalar",
+                  "queries": [
+                    {
+                      "data_source": "metrics",
+                      "name": "query1",
+                      "query": "avg:ticket_log.tickets.count{*}",
+                      "aggregator": "last"
+                    }
+                  ],
+                  "formulas": [{ "formula": "query1" }]
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "query_value",
+              "title": "My Queue Size",
+              "autoscale": true,
+              "precision": 0,
+              "requests": [
+                {
+                  "response_format": "scalar",
+                  "queries": [
+                    {
+                      "data_source": "metrics",
+                      "name": "query1",
+                      "query": "avg:ticket_log.queue.size{*}",
+                      "aggregator": "last"
+                    }
+                  ],
+                  "formulas": [{ "formula": "query1" }]
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "query_value",
+              "title": "DB File Size",
+              "autoscale": true,
+              "precision": 2,
+              "requests": [
+                {
+                  "response_format": "scalar",
+                  "queries": [
+                    {
+                      "data_source": "metrics",
+                      "name": "query1",
+                      "query": "avg:ticket_log.db.size_bytes{*}",
+                      "aggregator": "last"
+                    }
+                  ],
+                  "formulas": [{ "formula": "query1", "cell_display_mode": "bytes" }]
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Tickets Logged Over Time (by area)",
+        "show_legend": true,
+        "legend_layout": "auto",
+        "requests": [
+          {
+            "display_type": "bars",
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "query1",
+                "query": "sum:ticket_log.tickets.logged{*} by {area}.as_count()"
+              }
+            ],
+            "response_format": "timeseries",
+            "formulas": [{ "formula": "query1" }],
+            "style": { "palette": "dog_classic" }
+          }
+        ],
+        "yaxis": { "include_zero": true }
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Zendesk Calls by Outcome (fetch + queue)",
+        "show_legend": true,
+        "legend_layout": "auto",
+        "requests": [
+          {
+            "display_type": "bars",
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "query1",
+                "query": "sum:ticket_log.zendesk_call{*} by {endpoint,outcome}.as_count()"
+              }
+            ],
+            "response_format": "timeseries",
+            "formulas": [{ "formula": "query1" }],
+            "style": { "palette": "warm" }
+          }
+        ],
+        "yaxis": { "include_zero": true },
+        "markers": []
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Zendesk Call Latency — avg vs p95 (ms)",
+        "show_legend": true,
+        "legend_layout": "auto",
+        "requests": [
+          {
+            "display_type": "line",
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "query1",
+                "query": "avg:ticket_log.zendesk_call.duration.avg{*} by {endpoint}"
+              }
+            ],
+            "response_format": "timeseries",
+            "formulas": [{ "formula": "query1", "alias": "avg" }]
+          },
+          {
+            "display_type": "line",
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "query2",
+                "query": "avg:ticket_log.zendesk_call.duration.95percentile{*} by {endpoint}"
+              }
+            ],
+            "response_format": "timeseries",
+            "formulas": [{ "formula": "query2", "alias": "p95" }]
+          }
+        ],
+        "yaxis": { "include_zero": true, "label": "ms" }
+      }
+    },
+    {
+      "definition": {
+        "type": "toplist",
+        "title": "Zendesk Call Volume by Endpoint",
+        "requests": [
+          {
+            "response_format": "scalar",
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "query1",
+                "query": "sum:ticket_log.zendesk_call{*} by {endpoint}.as_count()",
+                "aggregator": "sum"
+              }
+            ],
+            "formulas": [{ "formula": "query1" }]
+          }
+        ]
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "DB Size & Ticket Count Over Time",
+        "show_legend": true,
+        "legend_layout": "auto",
+        "requests": [
+          {
+            "display_type": "line",
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "query1",
+                "query": "avg:ticket_log.tickets.count{*}"
+              }
+            ],
+            "response_format": "timeseries",
+            "formulas": [{ "formula": "query1", "alias": "ticket count" }]
+          },
+          {
+            "display_type": "line",
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "query2",
+                "query": "avg:ticket_log.db.size_bytes{*}"
+              }
+            ],
+            "response_format": "timeseries",
+            "formulas": [{ "formula": "query2 / 1024", "alias": "db size (KB)" }]
+          }
+        ],
+        "yaxis": { "include_zero": true }
+      }
+    }
+  ]
+}
