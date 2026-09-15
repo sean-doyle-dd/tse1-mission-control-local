@@ -157,12 +157,20 @@ class ClaudeCliError(Exception):
         self.status = status
 
 
-def run_claude_json(prompt, allowed_tools, model="claude-haiku-4-5-20251001", max_attempts=3):
+AUTH_HICCUP_MARKERS = ("authenticat", "authoriz")  # matches -ion/-ed/-e spellings
+
+
+def run_claude_json(prompt, allowed_tools, model="claude-haiku-4-5-20251001",
+                     max_attempts=2, per_attempt_timeout=90):
     """Run the claude CLI headlessly and parse a JSON object/array out of its
-    reply. Retries on the claude.ai connector's occasional transient
-    "no interactive MCP authentication" hiccup - a follow-up call reliably
-    succeeds even though nothing about the request changed.
+    reply. Retries on the claude.ai connector's occasional transient auth
+    hiccup ("no interactive MCP authentication available", "Zendesk MCP
+    server requires authentication", etc.) - a follow-up call has reliably
+    succeeded in testing even though nothing about the request changed.
+    Kept to 2 attempts x 90s (not 3 x 150s) so a genuinely broken connector
+    fails in under 3 minutes instead of feeling like it hangs forever.
     """
+    last_error = None
     for attempt in range(1, max_attempts + 1):
         try:
             proc = subprocess.run(
@@ -173,15 +181,17 @@ def run_claude_json(prompt, allowed_tools, model="claude-haiku-4-5-20251001", ma
                     "--allowedTools", allowed_tools,
                     "--permission-mode", "bypassPermissions",
                 ],
-                capture_output=True, text=True, timeout=150,
+                capture_output=True, text=True, timeout=per_attempt_timeout,
             )
         except subprocess.TimeoutExpired:
-            raise ClaudeCliError("claude CLI timed out after 150s", 504)
+            last_error = ClaudeCliError(f"claude CLI timed out after {per_attempt_timeout}s", 504)
+            continue
         except FileNotFoundError:
             raise ClaudeCliError("claude CLI not found on PATH - is Claude Code installed?", 500)
 
         if proc.returncode != 0:
-            raise ClaudeCliError(f"claude CLI failed: {proc.stderr.strip()[:300]}")
+            last_error = ClaudeCliError(f"claude CLI failed: {proc.stderr.strip()[:300]}")
+            continue
 
         try:
             outer = json.loads(proc.stdout)
@@ -189,8 +199,15 @@ def run_claude_json(prompt, allowed_tools, model="claude-haiku-4-5-20251001", ma
         except (json.JSONDecodeError, KeyError):
             result_text = ""
 
-        if "mcp authentication" in result_text.lower() and attempt < max_attempts:
-            continue  # transient connector auth hiccup - try again
+        if any(m in result_text.lower() for m in AUTH_HICCUP_MARKERS):
+            last_error = ClaudeCliError(
+                "The Zendesk connector needs a moment to re-authorize for headless calls "
+                "(this clears on its own - try again in a few seconds, or ask Claude in an "
+                "interactive session to run a Zendesk MCP call once to refresh it)."
+            )
+            if attempt < max_attempts:
+                continue
+            raise last_error
 
         # The model doesn't reliably follow "raw JSON only" - it sometimes wraps in
         # a markdown fence, adds a leading/trailing sentence, etc. Grab the
@@ -209,7 +226,7 @@ def run_claude_json(prompt, allowed_tools, model="claude-haiku-4-5-20251001", ma
             )
             raise ClaudeCliError("claude CLI returned something unparseable - try again")
 
-    raise ClaudeCliError("claude CLI kept hitting a connector auth hiccup - try again")
+    raise last_error or ClaudeCliError("claude CLI failed for an unknown reason - try again")
 
 
 @app.route("/api/zendesk/fetch", methods=["POST"])
