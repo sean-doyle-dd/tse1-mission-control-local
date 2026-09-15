@@ -1,6 +1,7 @@
 import json
 import re
 import shutil
+import socket
 import sqlite3
 import subprocess
 import time
@@ -13,6 +14,36 @@ CLAUDE_BIN = shutil.which("claude") or "claude"
 MISSION_DOC_ID = "sean-doyle"
 
 app = Flask(__name__)
+
+
+# ---- DogStatsD - talks to the host Agent already set up in Lab 3, no new
+# dependency needed since the StatsD wire protocol is a one-line UDP packet.
+class DogStatsD:
+    def __init__(self, host="127.0.0.1", port=8125):
+        self.addr = (host, port)
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+    def _send(self, payload):
+        try:
+            self.sock.sendto(payload.encode(), self.addr)
+        except OSError:
+            pass  # metrics are best-effort - never let a submit failure break a request
+
+    def gauge(self, metric, value, tags=None):
+        self._send(f"{metric}:{value}|g" + self._tag_suffix(tags))
+
+    def increment(self, metric, value=1, tags=None):
+        self._send(f"{metric}:{value}|c" + self._tag_suffix(tags))
+
+    def timing(self, metric, ms, tags=None):
+        self._send(f"{metric}:{ms}|ms" + self._tag_suffix(tags))
+
+    @staticmethod
+    def _tag_suffix(tags):
+        return f"|#{','.join(tags)}" if tags else ""
+
+
+statsd = DogStatsD()
 
 
 def get_db():
@@ -67,10 +98,26 @@ def index():
 
 # ---- ticket log ----
 
+def report_db_metrics():
+    """Custom metrics for the SQLite file - there's no server process for a
+    normal Datadog DB integration to connect to, so the app reports on
+    itself instead: row count and file size."""
+    try:
+        count = get_db().execute("SELECT COUNT(*) FROM tickets").fetchone()[0]
+        statsd.gauge("ticket_log.tickets.count", count)
+    except sqlite3.Error:
+        pass
+    try:
+        statsd.gauge("ticket_log.db.size_bytes", DB_PATH.stat().st_size)
+    except OSError:
+        pass
+
+
 @app.route("/api/tickets", methods=["GET"])
 def list_tickets():
     db = get_db()
     rows = db.execute("SELECT * FROM tickets ORDER BY created_at DESC, id DESC").fetchall()
+    report_db_metrics()
     return jsonify([dict(r) for r in rows])
 
 
@@ -102,6 +149,8 @@ def create_ticket():
         row,
     )
     db.commit()
+    statsd.increment("ticket_log.tickets.logged", tags=[f"area:{area}"])
+    report_db_metrics()
     return jsonify(row), 201
 
 
@@ -110,6 +159,7 @@ def delete_ticket(ticket_id):
     db = get_db()
     db.execute("DELETE FROM tickets WHERE id = ?", (ticket_id,))
     db.commit()
+    report_db_metrics()
     return jsonify({"ok": True})
 
 
@@ -255,14 +305,20 @@ def fetch_zendesk_ticket():
         f'"problem": "...", "outcome": "..."}}'
     )
 
+    start = time.monotonic()
     try:
         inner = run_claude_json(prompt, FETCH_ALLOWED_TOOLS)
     except ClaudeCliError as e:
+        statsd.increment("ticket_log.zendesk_call", tags=["endpoint:fetch", "outcome:error"])
+        statsd.timing("ticket_log.zendesk_call.duration", (time.monotonic() - start) * 1000, tags=["endpoint:fetch"])
         return jsonify({"error": str(e)}), e.status
+    statsd.timing("ticket_log.zendesk_call.duration", (time.monotonic() - start) * 1000, tags=["endpoint:fetch"])
 
     if isinstance(inner, dict) and inner.get("restricted"):
+        statsd.increment("ticket_log.zendesk_call", tags=["endpoint:fetch", "outcome:restricted"])
         return jsonify({"error": f"Ticket #{ticket_id} is AI-restricted (HIPAA/opt-out) - no automated fetch allowed"}), 403
 
+    statsd.increment("ticket_log.zendesk_call", tags=["endpoint:fetch", "outcome:ok"])
     inner["link"] = url
     return jsonify(inner)
 
@@ -277,13 +333,20 @@ def zendesk_queue():
         '"<the ticket\'s full agent-facing URL, e.g. https://datadog.zendesk.com/agent/'
         'tickets/<id>>"}. If the tool errors, reply with {"error": "<message>"}.'
     )
+    start = time.monotonic()
     try:
         result = run_claude_json(prompt, QUEUE_ALLOWED_TOOLS)
     except ClaudeCliError as e:
+        statsd.increment("ticket_log.zendesk_call", tags=["endpoint:queue", "outcome:error"])
+        statsd.timing("ticket_log.zendesk_call.duration", (time.monotonic() - start) * 1000, tags=["endpoint:queue"])
         return jsonify({"error": str(e)}), e.status
+    statsd.timing("ticket_log.zendesk_call.duration", (time.monotonic() - start) * 1000, tags=["endpoint:queue"])
 
     if isinstance(result, dict) and result.get("error"):
+        statsd.increment("ticket_log.zendesk_call", tags=["endpoint:queue", "outcome:error"])
         return jsonify({"error": result["error"]}), 502
+    statsd.increment("ticket_log.zendesk_call", tags=["endpoint:queue", "outcome:ok"])
+    statsd.gauge("ticket_log.queue.size", len(result))
     return jsonify(result)
 
 
